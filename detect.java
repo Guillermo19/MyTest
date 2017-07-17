@@ -48,8 +48,7 @@ public class DetectAnomalies {
 				option("inferSchema", "true").
 				csv(filePath);  //reads the data from a file whose path is passed to the constructor 
 		
-		dataset.cache(); 
-		
+		dataset.cache();
 		VectorAssembler assembler = new VectorAssembler()
 				.setInputCols(new String[]{"Size", "Volume"})
 				.setOutputCol("Inputs");
@@ -72,18 +71,11 @@ public class DetectAnomalies {
 		
 		clusterCenters = model.clusterCenters(); 
 		
-		dataset.show(false);
-		
-		for(Vector v : clusterCenters){
-			System.out.println(v);
-		}
-		this.adjustModel();
+		//this.adjustModel();
 	} //end constructor
 	
-	private void adjustModel(){ //Identifies potential extreme outliers (outliers far away from the normal data), saves and removes them, and adjusts the model with the new dataset 
-		
-		anomalies = new ArrayList<>(); 
-
+	private void adjustModel(){ //Identifies potential extreme outliers (outliers far away from the normal data), removes them, and adjusts the model with the new dataset 
+		anomalies = new ArrayList<>();
 		Dataset<Row> transDataset = model.transform(normalizedDataset); //creates a temporary transformed normalizedDataset that contains a prediction column
 		transDataset.cache(); 
 		Column predictionCol = new Column("prediction");
@@ -100,15 +92,17 @@ public class DetectAnomalies {
 			}//end if
 		}//end for
 		
-		normalizedDataset = normalizer.fit(transDataset.drop("prediction", "features")).transform(transDataset.drop("prediction", "features"));
-		model = kmeans.fit(normalizedDataset);
-		clusterCenters = model.clusterCenters();
+		if(!anomalies.isEmpty()){
+			normalizedDataset = normalizer.fit(transDataset.drop("prediction", "features")).transform(transDataset.drop("prediction", "features"));
+			model = kmeans.fit(normalizedDataset);
+			clusterCenters = model.clusterCenters();
+		}
 		
 		this.getAnomalies();
 		
 	}//end adjust model
 	
-	private void getAnomalies(){ //identifies potential outliers that might be mixed with normal data and saves them
+	private void getAnomalies(){ //identifies potential outliers that might be mixed with normal data
 		ArrayList<Row> rows = new ArrayList<>(normalizedDataset.collectAsList());
 		int i = 0;
 		Vector datapoint;
@@ -150,7 +144,17 @@ public class DetectAnomalies {
 		if(!anomalies.isEmpty()){
 			System.out.println("Possible anomalous files: ");
 			for(Row r : anomalies){
-				System.out.println(r.getAs("File").toString());
+				double size = ((Vector) r.getAs("features")).toArray()[0];
+				double volume = ((Vector) r.getAs("features")).toArray()[1];
+						
+				if(Math.abs(size) > threshold && Math.abs(volume) < threshold)
+					System.out.println(r.getAs("File") + " (problem with the size)");
+				
+				else if(Math.abs(volume) > threshold && Math.abs(size) < threshold)
+					System.out.println(r.getAs("File") + " (problem with the volume)");
+				
+				else
+					System.out.println(r.getAs("File") + " (problem with both the size and volume)");
 			}
 		}
 		else{
