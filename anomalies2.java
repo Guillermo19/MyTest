@@ -125,7 +125,7 @@ public class DetectAnomalousData {
 		Dataset<Row> anomalies = model.transform(test).filter(anomaly.equalTo(1));
 		System.out.println("Possible anomalous data: ");
 		anomalies.select("prediction", columnNames).drop("prediction").show();
-		//System.out.println(model.toDebugString());
+		System.out.println(model.toDebugString());
 	}
 	
 	//checks for categorical values NOT present on the training dataset and removes them from the testing set
