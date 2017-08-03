@@ -13,6 +13,7 @@ import org.apache.spark.sql.Column;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.functions;
 
 public class DetectAnomalies {
 	
@@ -30,11 +31,10 @@ public class DetectAnomalies {
 			  .getOrCreate();
 	
 	private Dataset<Row> features;
-	private Dataset<Row> test;
+	private Dataset<Row> dataset;
 
 	private String featuresFile;
-	private String testFile;
-	private String[] columnNames;
+	private String datasetFile;
 	private String[] featureColumns;
 	
 	private GBTClassifier classifier;
@@ -53,12 +53,12 @@ public class DetectAnomalies {
 		}
 		
 		System.out.println("Enter the name of the file you want to check for possible errors: ");
-		testFile = in.nextLine();
-		file = new File(testFile);
+		datasetFile = in.nextLine();
+		file = new File(datasetFile);
 		while(!file.exists()){
 			System.out.println("Enter the name of the file you want to check for possible errors:: ");
-			testFile = in.nextLine();
-			file = new File(testFile);
+			datasetFile = in.nextLine();
+			file = new File(datasetFile);
 		}
 		in.close();
 		
@@ -68,34 +68,65 @@ public class DetectAnomalies {
 				  .option("delimiter", "\t")
 				  .csv(featuresFile);
 		
-		test = sparkSession.read()
+		dataset = sparkSession.read()
 				  .option("header", "true")
 				  .option("inferSchema", "true")
 				  .option("delimiter", "\t")
-				  .csv(testFile);
+				  .csv(datasetFile);
 		
 		features.cache();
-		test.cache();
-		columnNames = test.columns();
+		dataset.cache();
 		featureColumns = features.columns();
+		dataset = dataset.withColumn("label", functions.lit(0));
 	}
 	
 	private void labelAnomalies(){
+		for(String column : featureColumns){
+			Column col = new Column(column);
+			Column label = new Column("label");
+			String feature = features.head().getAs(column);
+			Column condition = this.getCondition(feature, col);
+			dataset = dataset.withColumn("label", functions.when(condition.or(label.equalTo(1)), 1).otherwise(0));
+		}
+	}
+	
+	private Column getCondition(String feature, Column col){
+		Column condition = col.isNull();
+		char filter = feature.charAt(0);
+		Object value = feature.substring(1);
 		
+		switch(filter){
+		case '=':
+			condition = col.equalTo(value);
+			break;
+		case '!':
+			condition = col.notEqual(value);
+			break;
+		case '>':
+			condition = col.gt(value);
+			break;
+		case '<':
+			condition = col.lt(value);
+			break;
+		case '%':
+			condition = col.like("%"+value+"%");
+			break;
+		}
+		
+		return condition;
 	}
 	//prepares the dataset for features on the specified columns 
 	private void prepareDataset(){
+		this.labelAnomalies();
 		VectorAssembler featureAssembler;
 		List<String> featureCols = new ArrayList<>();
 		StringIndexerModel indexer;
 		
-		for(String column : columnNames){
-			if(features.head().getAs(column).getClass().getSimpleName().equals("String")){
-				Column col = new Column(column);
+		for(String column : featureColumns){
+			if(dataset.head().getAs(column).getClass().getSimpleName().equals("String")){
 				
-				indexer = new StringIndexer().setInputCol(column).setOutputCol("INDEX"+column).fit(features);
-				features = indexer.transform(features);
-				
+				indexer = new StringIndexer().setInputCol(column).setOutputCol("INDEX"+column).fit(dataset);
+				dataset = indexer.transform(dataset);
 				featureCols.add("INDEX"+column);
 			}
 			else
@@ -105,26 +136,26 @@ public class DetectAnomalies {
 		String[] features = featureCols.toArray(new String[0]);
 		featureAssembler = new VectorAssembler().setInputCols(features).setOutputCol("features");
 		
-		features = featureAssembler.transform(features);
-		test = featureAssembler.transform(test);
+		//features = featureAssembler.transform(features);
+		dataset = featureAssembler.transform(dataset);
 		
 	}
 	
 	//checks for anomalous data features the model on the whole dataset
 	private void checkForAnomalies(){
 		this.prepareDataset();
-		classifier = new GBTClassifier().setLabelCol("anomalous");
-		model = classifier.fit(features);
+		classifier = new GBTClassifier();
+		model = classifier.fit(dataset);
 	}
 	
 	//displaus the possible anomalies to the user  
 	public void printAnomalies(){
 		this.checkForAnomalies();
 		Column anomaly = new Column("prediction");
-		Dataset<Row> anomalies = model.transform(test).filter(anomaly.equalTo(1));
+		Dataset<Row> anomalies = model.transform(dataset).filter(anomaly.equalTo(1));
 		System.out.println("Possible anomalous data: ");
-		anomalies.select("prediction", columnNames).drop("prediction").show();
-		System.out.println(model.toDebugString());
+		anomalies.select("prediction", featureColumns).drop("prediction").show();
+		//System.out.println(model.toDebugString());
 		//System.out.println(model);
 	}
 }
