@@ -1,6 +1,7 @@
 import java.util.List;
 import java.util.Scanner;
 import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
 import org.apache.spark.SparkConf;
 import org.apache.spark.api.java.JavaSparkContext;
@@ -33,8 +34,9 @@ public class DetectAnomalies {
 	private Dataset<Row> features;
 	private Dataset<Row> dataset;
 
-	private String featuresFile;
+	private String featuresOrModelFile;
 	private String datasetFile;
+	private String modelNametoSave;
 	private String[] featureColumns;
 	
 	private GBTClassifier classifier;
@@ -43,50 +45,69 @@ public class DetectAnomalies {
 	public DetectAnomalies() {
 		File file;
 		Scanner in = new Scanner(System.in);
-		System.out.println("Enter the features file: ");
-		featuresFile = in.nextLine();
-		file = new File(featuresFile);
-		while(!file.exists()){
-			System.out.println("Enter the features file: ");
-			featuresFile = in.nextLine();
-			file = new File(featuresFile);
-		}
-		
 		System.out.println("Enter the name of the file you want to check for possible errors: ");
 		datasetFile = in.nextLine();
 		file = new File(datasetFile);
 		while(!file.exists()){
-			System.out.println("Enter the name of the file you want to check for possible errors:: ");
+			System.out.println("Enter the name of the file you want to check for possible errors: ");
 			datasetFile = in.nextLine();
 			file = new File(datasetFile);
 		}
-		in.close();
-		
-		features = sparkSession.read()
-				  .option("header", "true")
-				  .option("inferSchema", "true")
-				  .option("delimiter", "\t")
-				  .csv(featuresFile);
-		
 		dataset = sparkSession.read()
 				  .option("header", "true")
 				  .option("inferSchema", "true")
 				  .option("delimiter", "\t")
 				  .csv(datasetFile);
-		
-		features.cache();
+	
 		dataset.cache();
-		featureColumns = features.columns();
-		dataset = dataset.withColumn("label", functions.lit(0));
+	
+		System.out.println("Enter the model you want to use for prediction OR enter the features file if you want to create a new model: ");
+		featuresOrModelFile = in.nextLine();
+		file = new File(featuresOrModelFile);
+		while(!file.exists()){
+			System.out.println("Enter the model you want to use for prediction OR enter the features file if you want to create a new model: ");
+			featuresOrModelFile = in.nextLine();
+			file = new File(featuresOrModelFile);
+		}
+		
+		try{
+			model = GBTClassificationModel.load(featuresOrModelFile);
+			featureColumns = new String[]{"REF", "Book", "Cash1"};
+			this.prepareDataset();
+		}catch(Exception e){
+			e.printStackTrace();
+			features = sparkSession.read()
+					  .option("header", "true")
+					  .option("inferSchema", "true")
+					  .option("delimiter", "\t")
+					  .csv(featuresOrModelFile);
+			
+			features.cache();
+			featureColumns = features.columns();
+			
+			System.out.println("No model detected... Creating new model based on features entered.");
+			System.out.println("Enter the name of the model to save: ");
+			modelNametoSave = in.nextLine();
+			dataset = dataset.withColumn("label", functions.lit(0));
+			this.labelAnomalies();
+			this.prepareDataset();
+			this.createModel();
+		}finally{
+			in.close();
+		}
 	}
 	
 	private void labelAnomalies(){
+		
 		for(String column : featureColumns){
 			Column col = new Column(column);
 			Column label = new Column("label");
-			String feature = features.head().getAs(column);
-			Column condition = this.getCondition(feature, col);
-			dataset = dataset.withColumn("label", functions.when(condition.or(label.equalTo(1)), 1).otherwise(0));
+			List<Row> colFeatures = features.select(col).filter(col.isNotNull()).collectAsList();
+			for(Row row : colFeatures){
+				String feature = row.getAs(0);
+				Column condition = this.getCondition(feature, col);
+				dataset = dataset.withColumn("label", functions.when(condition.or(label.equalTo(1)), 1).otherwise(0));
+			}
 		}
 	}
 	
@@ -95,29 +116,33 @@ public class DetectAnomalies {
 		char filter = feature.charAt(0);
 		Object value = feature.substring(1);
 		
-		switch(filter){
-		case '=':
-			condition = col.equalTo(value);
-			break;
-		case '!':
-			condition = col.notEqual(value);
-			break;
-		case '>':
-			condition = col.gt(value);
-			break;
-		case '<':
-			condition = col.lt(value);
-			break;
-		case '%':
-			condition = col.like("%"+value+"%");
-			break;
+		if(feature.length() > 1){
+			switch(filter){
+			case '=':
+				condition = col.equalTo(value);
+				break;
+			case '!':
+				condition = col.notEqual(value);
+				break;
+			case '>':
+				condition = col.gt(value);
+				break;
+			case '<':
+				condition = col.lt(value);
+				break;
+			case '%':
+				condition = col.like("%"+value+"%");
+				break;
+			default:
+				condition = col.contains(value);
+				break;
+			}
 		}
 		
 		return condition;
 	}
 	//prepares the dataset for features on the specified columns 
 	private void prepareDataset(){
-		this.labelAnomalies();
 		VectorAssembler featureAssembler;
 		List<String> featureCols = new ArrayList<>();
 		StringIndexerModel indexer;
@@ -135,27 +160,28 @@ public class DetectAnomalies {
 
 		String[] features = featureCols.toArray(new String[0]);
 		featureAssembler = new VectorAssembler().setInputCols(features).setOutputCol("features");
-		
-		//features = featureAssembler.transform(features);
+
 		dataset = featureAssembler.transform(dataset);
-		
 	}
 	
 	//checks for anomalous data features the model on the whole dataset
-	private void checkForAnomalies(){
-		this.prepareDataset();
+	private void createModel(){
 		classifier = new GBTClassifier();
 		model = classifier.fit(dataset);
+		try {
+			model.save(modelNametoSave);
+			System.out.println("Model saved!");
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
 	}
 	
 	//displaus the possible anomalies to the user  
 	public void printAnomalies(){
-		this.checkForAnomalies();
 		Column anomaly = new Column("prediction");
 		Dataset<Row> anomalies = model.transform(dataset).filter(anomaly.equalTo(1));
 		System.out.println("Possible anomalous data: ");
-		anomalies.select("prediction", featureColumns).drop("prediction").show();
-		//System.out.println(model.toDebugString());
-		//System.out.println(model);
+		anomalies.select("prediction", featureColumns).drop("prediction").show(50);
 	}
 }
