@@ -72,7 +72,7 @@ public class DetectAnomalies {
 		
 		try{
 			model = GBTClassificationModel.load(featuresOrModelFile);
-			featureColumns = new String[]{"REF", "Book", "Cash1"};
+			featureColumns = VectorAssembler.load(featuresOrModelFile + "assembler").getInputCols();
 			this.prepareDataset();
 		}catch(Exception e){
 			e.printStackTrace();
@@ -145,23 +145,39 @@ public class DetectAnomalies {
 	private void prepareDataset(){
 		VectorAssembler featureAssembler;
 		List<String> featureCols = new ArrayList<>();
+		List<String> columnsToCheck = new ArrayList<>();
+		
 		StringIndexerModel indexer;
 		
 		for(String column : featureColumns){
 			if(dataset.head().getAs(column).getClass().getSimpleName().equals("String")){
-				
 				indexer = new StringIndexer().setInputCol(column).setOutputCol("INDEX"+column).fit(dataset);
 				dataset = indexer.transform(dataset);
 				featureCols.add("INDEX"+column);
 			}
+			else if(dataset.head().getAs(column).getClass().getSimpleName().equals("Timestamp")){
+				dataset = dataset.withColumn("INDEX"+column, new Column(column).cast("Integer"));
+				featureCols.add("INDEX"+column);
+			}
 			else
 				featureCols.add(column);
+			
+			columnsToCheck.add(column);
 		}
-
+		
 		String[] features = featureCols.toArray(new String[0]);
 		featureAssembler = new VectorAssembler().setInputCols(features).setOutputCol("features");
-
 		dataset = featureAssembler.transform(dataset);
+		
+		try {
+			new VectorAssembler()
+			.setInputCols(columnsToCheck.toArray(new String[0]))
+			.setOutputCol("features")
+			.save(modelNametoSave+"assembler");
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
 	}
 	
 	//checks for anomalous data features the model on the whole dataset
@@ -183,5 +199,6 @@ public class DetectAnomalies {
 		Dataset<Row> anomalies = model.transform(dataset).filter(anomaly.equalTo(1));
 		System.out.println("Possible anomalous data: ");
 		anomalies.select("prediction", featureColumns).drop("prediction").show(50);
+		//System.out.println(model.toDebugString());
 	}
 }
