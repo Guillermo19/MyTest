@@ -73,6 +73,7 @@ public class DetectAnomalies {
 		try{
 			model = GBTClassificationModel.load(featuresOrModelFile);
 			featureColumns = VectorAssembler.load(featuresOrModelFile + "assembler").getInputCols();
+			
 			this.prepareDataset();
 		}catch(Exception e){
 			e.printStackTrace();
